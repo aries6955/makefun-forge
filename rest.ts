@@ -38,11 +38,9 @@ export class MalformedJsonError extends Error {}
 
 function send(res: ServerResponse, status: number, body: unknown, headers: Record<string, string> = {}): void {
   const text = `${JSON.stringify(body)}\n`;
-  const rid = ridOf();
   res.writeHead(status, {
     'content-type': 'application/json; charset=utf-8',
-    'content-length': Buffer.byteLength(text),
-    'x-github-request-id': rid,
+    'x-github-request-id': ridOf(),
     ...headers,
   });
   res.end(text);
@@ -96,8 +94,15 @@ function repoJson(repo: Repo): Record<string, unknown> {
   };
 }
 
+const userJsonCache = new Map<string, Record<string, unknown>>();
+
+/** Memoised: the read workload asks for the same owner 2,000 times. */
 function userJson(login: string): Record<string, unknown> {
-  return { login, id: loginId(login), node_id: globalId('U', login), type: 'User', site_admin: false };
+  const hit = userJsonCache.get(login);
+  if (hit !== undefined) return hit;
+  const made = { login, id: loginId(login), node_id: globalId('U', login), type: 'User', site_admin: false };
+  userJsonCache.set(login, made);
+  return made;
 }
 
 function loginId(login: string): number {
@@ -106,8 +111,16 @@ function loginId(login: string): number {
   return h || 1;
 }
 
+const labelJsonCache = new Map<string, Record<string, unknown>>();
+
+/** Memoised per name+colour: issue reads rebuild the same labels thousands of times. */
 function labelJson(name: string, color: string): Record<string, unknown> {
-  return { id: loginId(name), node_id: globalId('L', name), name, color, default: false, description: null };
+  const key = `${color}\u0000${name}`;
+  const hit = labelJsonCache.get(key);
+  if (hit !== undefined) return hit;
+  const made = { id: loginId(name), node_id: globalId('L', name), name, color, default: false, description: null };
+  labelJsonCache.set(key, made);
+  return made;
 }
 
 function issueJson(repo: Repo, issue: Issue): Record<string, unknown> {

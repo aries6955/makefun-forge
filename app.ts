@@ -75,9 +75,15 @@ export function createApp(): Server {
 }
 
 async function handleRequest(store: Store, owner: string, token: string, req: IncomingMessage, res: ServerResponse): Promise<void> {
-  const path = pathOf(req);
+  // One URL parse per request: pathOf and queryOf used to build it twice.
+  let url: URL;
+  try {
+    url = new URL(req.url ?? '/', 'http://entry');
+  } catch {
+    url = new URL('/', 'http://entry');
+  }
+  const path = url.pathname;
   const method = req.method ?? 'GET';
-  const url = queryOf(req);
 
   try {
     // The env's boot check calls this twice: 200 {"ok":true}.
