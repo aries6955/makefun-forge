@@ -2,7 +2,7 @@
 // One forge instance owns one Store; REST, GraphQL, MCP and git all act on it.
 
 import { createHash } from 'node:crypto';
-import { ObjectStore, buildTreeFromFiles, parseCommit, parseTree, parseTag, type TreeEntry } from './git.ts';
+import { ObjectStore, buildTreeFromFiles, isTreeMode, parseCommit, parseTree, parseTag, type TreeEntry } from './git.ts';
 
 export interface Label {
   name: string;
@@ -229,7 +229,7 @@ export function listPath(repo: Repo, commitSha: string, path: string): TreeEntry
       const entries = parseTree(tree.data);
       const hit = entries.find((e) => e.name === seg);
       if (hit === undefined) return null;
-      if (hit.mode !== '040000') return null;
+      if (!isTreeMode(hit.mode)) return null;
       treeOid = hit.oid;
     }
   }
@@ -251,14 +251,14 @@ export function readPath(repo: Repo, commitSha: string, path: string): { entry: 
     if (tree === undefined || tree.type !== 'tree') return null;
     const entries = parseTree(tree.data);
     const hit = entries.find((e) => e.name === segs[i]);
-    if (hit === undefined || hit.mode !== '040000') return null;
+    if (hit === undefined || !isTreeMode(hit.mode)) return null;
     treeOid = hit.oid;
   }
   const tree = repo.store.get(treeOid);
   if (tree === undefined || tree.type !== 'tree') return null;
   const entries = parseTree(tree.data);
   const hit = entries.find((e) => e.name === segs[segs.length - 1]);
-  if (hit === undefined || hit.mode === '040000') return null;
+  if (hit === undefined || isTreeMode(hit.mode)) return null;
   const blob = repo.store.get(hit.oid);
   if (blob === undefined) return null;
   return { entry: hit, data: blob.data, treeSha: treeOid };
@@ -302,7 +302,7 @@ export function collectFiles(repo: Repo, commitSha: string, prefix: string, out:
     const tree = repo.store.get(treeOid);
     if (tree === undefined || tree.type !== 'tree') return;
     for (const e of parseTree(tree.data)) {
-      if (e.mode === '040000') {
+      if (isTreeMode(e.mode)) {
         walk(e.oid, dir === '' ? e.name : `${dir}/${e.name}`);
       } else if (e.mode === '100644' || e.mode === '100755' || e.mode === '120000') {
         const blob = repo.store.get(e.oid);

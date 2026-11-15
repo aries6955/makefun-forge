@@ -151,7 +151,6 @@ async function handleRequest(store: Store, owner: string, token: string, req: In
     // Unknown route: JSON 404.
     sendJson(res, 404, { message: 'Not Found' });
   } catch (err) {
-    void err;
     try {
       if (!res.headersSent) sendJson(res, 500, { message: 'Internal error' });
       else res.end();

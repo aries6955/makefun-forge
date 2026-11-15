@@ -52,9 +52,12 @@ class Lexer {
     }
   }
 
+  /** The next token without consuming it. */
   peek(): string {
-    this.skipWs();
-    return this.text[this.pos] ?? '';
+    const start = this.pos;
+    const token = this.nextToken();
+    this.pos = start;
+    return token;
   }
 
   nextToken(): string {
@@ -70,6 +73,10 @@ class Lexer {
       this.pos++;
       while (this.pos < this.text.length && /[A-Za-z_0-9]/.test(this.text[this.pos]!)) this.pos++;
       return this.text.slice(start, this.pos);
+    }
+    if (c === '.' && this.text.startsWith('...', this.pos)) {
+      this.pos += 3;
+      return '...';
     }
     if (c === '[') {
       this.pos++;
@@ -176,13 +183,13 @@ function parseSelectionSet(lexer: Lexer, fragments: Map<string, GqlField[]>): Gq
         if (lexer.peek() === '(') skipParens(lexer);
         continue;
       }
-      if (next === 'o' && lexer.text.startsWith('on', positionOf(lexer))) {
+      // inline fragment: `... on Type { fields }` — its fields belong to this selection set
+      if (next === 'on') {
         lexer.nextToken(); // on
-        lexer.nextToken(); // Type
-        const lb = lexer.nextToken();
-        if (lb === '{') {
-          const inline = parseSelectionSet(lexer, fragments);
-          fields.push(...inline);
+        lexer.nextToken(); // the type condition
+        if (lexer.peek() === '{') {
+          lexer.nextToken();
+          for (const inner of parseSelectionSet(lexer, fragments)) fields.push(inner);
         }
         continue;
       }
@@ -211,12 +218,6 @@ function parseSelectionSet(lexer: Lexer, fragments: Map<string, GqlField[]>): Gq
     fields.push(field);
   }
   return fields;
-}
-
-function positionOf(lexer: Lexer): number {
-  // Hack: peek without consuming by cloning the position logic. We re-implement peek.
-  void lexer;
-  return -1;
 }
 
 function skipParens(lexer: Lexer): void {

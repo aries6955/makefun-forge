@@ -3,7 +3,7 @@
 import type { IncomingMessage, ServerResponse } from 'node:http';
 import { Store, type Issue, type PullRequest, type Repo, RepoExistsError, LabelNotFoundError, RefNotFoundError, listPath, readPath, collectFiles, commitPath, refCommit, listCommits, globalId, blobSha, shortSha, nowIso } from './store.ts';
 import { diffTrees, diffStats, isAncestor, peel } from './git-http.ts';
-import { buildTreeFromFiles } from './git.ts';
+import { buildTreeFromFiles, isTreeMode } from './git.ts';
 
 export interface RestContext {
   store: Store;
@@ -407,24 +407,23 @@ async function handleRepoRoutes(ctx: RestContext, repo: Repo, method: string, re
     }
     const commits = listCommits(repo, tip, 30);
     send(res, 200, commits.map((c) => {
-      const obj = repo.store.get(c.sha)!;
-      const firstLine = c.message.split('\n')[0] ?? '';
-      const m = /^author (.*) <(.*)> (\d+) ([+-]\d{4})$/.exec(obj.data.toString('utf8'));
-      void m;
+      const raw = repo.store.get(c.sha)!.data.toString('utf8');
+      const authorLine = /^author (.*) <(.*)> (\d+) ([+-]\d{4})$/m.exec(raw);
+      const when = authorLine === null ? repo.createdAt : new Date(Number(authorLine[3]) * 1000).toISOString().replace(/\.\d{3}Z$/, 'Z');
+      const who = { name: authorLine?.[1] ?? 'forge', email: authorLine?.[2] ?? 'forge@example.invalid', date: when };
       return {
         sha: c.sha,
         commit: {
-          message: c.message,
-          author: { name: 'forge', email: 'forge@example.invalid', date: repo.createdAt },
-          committer: { name: 'forge', email: 'forge@example.invalid', date: repo.createdAt },
+          message: c.message.replace(/\n$/, ''),
+          author: who,
+          committer: who,
           tree: { sha: c.tree, url: `${apiRoot}/git/trees/${c.tree}` },
         },
         parents: c.parents.map((p) => ({ sha: p, url: `${apiRoot}/commits/${p}` })),
         html_url: `/${repo.owner}/${repo.name}/commit/${c.sha}`,
         url: `${apiRoot}/commits/${c.sha}`,
-        author: null,
-        committer: null,
-        _first: firstLine,
+        author: who,
+        committer: who,
       };
     }));
     return true;
@@ -444,15 +443,16 @@ async function handleRepoRoutes(ctx: RestContext, repo: Repo, method: string, re
       }
       // directory?
       if (filePath === '' || filePath === '/') {
-        const entries = listPath(repo, tip, '');
-        if (entries === null) {
-          sendError(res, 404, 'Not Found');
-          return true;
-        }
+        const entries = listPath(repo, tip, '') ?? [];
         send(res, 200, entries.map((e) => contentEntryJson(repo, e, branch)));
         return true;
       }
-      const dirEntries = listPath(repo, tip, filePath);
+      let dirEntries: ReturnType<typeof listPath> = null;
+      try {
+        dirEntries = listPath(repo, tip, filePath);
+      } catch {
+        dirEntries = null;
+      }
       if (dirEntries !== null) {
         send(res, 200, dirEntries.map((e) => contentEntryJson(repo, e, branch, filePath)));
         return true;
@@ -895,7 +895,8 @@ async function handleRepoRoutes(ctx: RestContext, repo: Repo, method: string, re
 }
 
 function contentEntryJson(repo: Repo, e: { name: string; oid: string; mode: string }, branch: string, parentPath = ''): Record<string, unknown> {
-  const isDir = e.mode === '040000';
+  const owner = repo.owner ?? 'forge-user';
+  const isDir = isTreeMode(e.mode);
   const full = parentPath === '' ? e.name : `${parentPath}/${e.name}`;
   const obj = repo.store.get(e.oid);
   const size = obj !== undefined && obj.type === 'blob' ? obj.data.length : 0;
@@ -905,10 +906,10 @@ function contentEntryJson(repo: Repo, e: { name: string; oid: string; mode: stri
     sha: isDir ? e.oid : blobSha(obj?.type === 'blob' ? obj.data.toString('utf8') : ''),
     size: isDir ? 0 : size,
     type: isDir ? 'dir' : 'file',
-    url: `/api/v3/repos/${repo.owner}/${repo.name}/contents/${full}`,
-    git_url: isDir ? `/api/v3/repos/${repo.owner}/${repo.name}/git/trees/${e.oid}` : `/api/v3/repos/${repo.owner}/${repo.name}/git/blobs/${e.oid}`,
-    html_url: `/${repo.owner}/${repo.name}/blob/${branch}/${full}`,
-    download_url: isDir ? null : `/${repo.owner}/${repo.name}/raw/${branch}/${full}`,
+    url: `/api/v3/repos/${owner}/${repo.name}/contents/${full}`,
+    git_url: isDir ? `/api/v3/repos/${owner}/${repo.name}/git/trees/${e.oid}` : `/api/v3/repos/${owner}/${repo.name}/git/blobs/${e.oid}`,
+    html_url: `/${owner}/${repo.name}/blob/${branch}/${full}`,
+    download_url: isDir ? null : `/${owner}/${repo.name}/raw/${branch}/${full}`,
     _links: {},
   };
 }

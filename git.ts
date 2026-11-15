@@ -6,6 +6,11 @@ import zlib, { inflateSync, deflateSync, createInflate } from 'node:zlib';
 
 export type ObjType = 'blob' | 'tree' | 'commit' | 'tag';
 
+/** A tree entry's mode is octal text with no leading zero: 40000 names a directory. */
+export function isTreeMode(mode: string): boolean {
+  return mode === '40000' || mode === '040000';
+}
+
 /** One raw git object: its type and its payload bytes. */
 export interface GitObject {
   readonly type: ObjType;
@@ -36,7 +41,7 @@ export class ObjectStore {
 // ---------------------------------------------------------------- tree encoding
 
 export interface TreeEntry {
-  readonly mode: string; // '100644' | '100755' | '040000' | '120000' | '160000'
+  readonly mode: string; // '100644' | '100755' | '40000' | '120000' | '160000'
   readonly name: string;
   readonly oid: string;
 }
@@ -45,8 +50,8 @@ export interface TreeEntry {
 export function encodeTree(entries: readonly TreeEntry[]): Buffer {
   entries = [...entries].sort((a, b) => {
     // git sorts tree entries as if directory names had a trailing '/'
-    const an = a.name + (a.mode === '040000' ? '/' : '');
-    const bn = b.name + (b.mode === '040000' ? '/' : '');
+    const an = a.name + (isTreeMode(a.mode) ? '/' : '');
+    const bn = b.name + (isTreeMode(b.mode) ? '/' : '');
     return an < bn ? -1 : an > bn ? 1 : 0;
   });
   const parts: Buffer[] = [];
@@ -93,7 +98,7 @@ export function buildTreeFromFiles(store: ObjectStore, files: ReadonlyMap<string
   const writeDir = (dir: Dir): string => {
     const entries: TreeEntry[] = [];
     for (const [name, f] of dir.files) entries.push({ mode: f.mode, name, oid: f.oid });
-    for (const [name, d] of dir.dirs) entries.push({ mode: '040000', name, oid: writeDir(d) });
+    for (const [name, d] of dir.dirs) entries.push({ mode: '40000', name, oid: writeDir(d) });
     const data = encodeTree(entries);
     return store.store('tree', data);
   };

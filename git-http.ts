@@ -2,7 +2,7 @@
 // pkt-line framing, side-band-64k, report-status. No git binary: everything hand-rolled.
 
 import { createHash } from 'node:crypto';
-import { applyDelta, parseTree, readPackObjects, writePack, type ObjType } from './git.ts';
+import { applyDelta, isTreeMode, parseTree, readPackObjects, writePack, type ObjType } from './git.ts';
 import { refCommit, peel, type Repo, type Store } from './store.ts';
 
 const TYPE_BY_NUM: Record<number, ObjType | undefined> = { 1: 'commit', 2: 'tree', 3: 'blob', 4: 'tag' };
@@ -598,13 +598,37 @@ export function computeUpload(repo: Repo, wants: string[], haves: string[], dept
 
   // Everything reachable from `roots`, stopping at `stops`. Depth counts commits only.
   const send = new Map<string, { type: ObjType; data: Buffer }>();
+  // Objects the client already holds: the whole closure of every have.
+  const held = new Set<string>();
+  const holdClosure = (oid: string): void => {
+    if (held.has(oid)) return;
+    const obj = repo.store.get(oid);
+    if (obj === undefined) return;
+    held.add(oid);
+    if (obj.type === 'commit') {
+      const tree = parseCommitTree(repo, oid);
+      if (tree !== null) holdClosure(tree);
+      for (const parent of parentOf(repo, oid)) holdClosure(parent);
+    } else if (obj.type === 'tree') {
+      for (const entry of parseTree(obj.data)) holdClosure(entry.oid);
+    } else if (obj.type === 'tag') {
+      holdClosure(peel(repo, oid));
+    }
+  };
+  // A deepen fetch names the tip as both want and have: holding its whole history would
+  // leave nothing to send, so a have that is also a want only holds itself and its tree.
+  const wantSetAll = new Set(wants);
+  for (const have of haveSet) {
+    if (depth !== null && wantSetAll.has(have)) continue;
+    holdClosure(have);
+  }
   const shallowCuts = new Set<string>();
   const visitedCommits = new Map<string, number>();
 
   const addObject = (oid: string): boolean => {
     const obj = repo.store.get(oid);
     if (obj === undefined) return false;
-    if (!send.has(oid)) send.set(oid, { type: obj.type, data: obj.data });
+    if (!send.has(oid) && !held.has(oid)) send.set(oid, { type: obj.type, data: obj.data });
     return true;
   };
 
@@ -613,21 +637,24 @@ export function computeUpload(repo: Repo, wants: string[], haves: string[], dept
     const obj = repo.store.get(treeOid)!;
     if (obj.type !== 'tree') return;
     for (const entry of parseTree(obj.data)) {
-      if (entry.mode === '040000') walkTree(entry.oid);
+      if (isTreeMode(entry.mode)) walkTree(entry.oid);
       else if (entry.mode !== '160000') addObject(entry.oid);
     }
   };
 
+  // A deepen fetch names the same commit as want and have: the walk must still descend
+  // to the new depth, so a have only stops the walk when no depth was asked for.
   const walkCommit = (sha: string, distance: number): void => {
-    if (haveSet.has(sha)) return;
+    if (haveSet.has(sha) && depth === null) return;
     const seen = visitedCommits.get(sha);
     if (seen !== undefined && seen <= distance) return;
     visitedCommits.set(sha, distance);
     const obj = repo.store.get(sha);
     if (obj === undefined || obj.type !== 'commit') return;
-    send.set(sha, { type: obj.type, data: obj.data });
+    if (!held.has(sha)) send.set(sha, { type: obj.type, data: obj.data });
     const tree = parseCommitTree(repo, sha);
     if (tree !== null) walkTree(tree);
+    // A commit at distance == depth is the boundary: send it, cut its parents.
     if (depth !== null && distance >= depth) {
       shallowCuts.add(sha);
       return;
@@ -639,7 +666,7 @@ export function computeUpload(repo: Repo, wants: string[], haves: string[], dept
     const obj = repo.store.get(want);
     if (obj !== undefined && obj.type === 'tag') {
       // an annotated tag ships with its object, then the closure of what it points at
-      send.set(want, { type: obj.type, data: obj.data });
+      if (!held.has(want)) send.set(want, { type: obj.type, data: obj.data });
       const target = peel(repo, want);
       const targetObj = repo.store.get(target);
       if (targetObj !== undefined && targetObj.type === 'commit') walkCommit(target, 1);
@@ -648,6 +675,7 @@ export function computeUpload(repo: Repo, wants: string[], haves: string[], dept
     walkCommit(want, 1);
   }
 
+  // The client's own boundary commits are no longer shallow once we send deeper.
   for (const c of shallowCuts) shallowLines.push(`shallow ${c}`);
   for (const s of clientShallows) if (!shallowCuts.has(s)) unshallowLines.push(`unshallow ${s}`);
   return { objects: [...send.values()], shallowLines, unshallowLines };
@@ -676,7 +704,7 @@ function collectTreeOids(repo: Repo, treeOid: string, out: Set<string>): void {
   const obj = repo.store.get(treeOid);
   if (obj === undefined || obj.type !== 'tree') return;
   for (const entry of parseTree(obj.data)) {
-    if (entry.mode === '040000') collectTreeOids(repo, entry.oid, out);
+    if (isTreeMode(entry.mode)) collectTreeOids(repo, entry.oid, out);
     else if (entry.mode !== '160000') out.add(entry.oid);
   }
 }
@@ -722,7 +750,7 @@ function collectFilesInto(repo: Repo, commitSha: string, out: Map<string, string
     if (obj === undefined || obj.type !== 'tree') return;
     for (const entry of parseTree(obj.data)) {
       const full = dir === '' ? entry.name : `${dir}/${entry.name}`;
-      if (entry.mode === '040000') walk(entry.oid, full);
+      if (isTreeMode(entry.mode)) walk(entry.oid, full);
       else if (entry.mode !== '160000') {
         const blob = repo.store.get(entry.oid);
         if (blob !== undefined) out.set(full, blob.data.toString('utf8'));
