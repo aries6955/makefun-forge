@@ -7,22 +7,6 @@ import { refCommit, peel, type Repo, type Store } from './store.ts';
 
 const TYPE_BY_NUM: Record<number, ObjType | undefined> = { 1: 'commit', 2: 'tree', 3: 'blob', 4: 'tag' };
 
-// The clone workload is 50 concurrent depth-1 clones of one tip: the pack bytes are the
-// same every time, so deflating them once per (repo, wants, haves, depth) is enough.
-// shortcut: the key is the plan's own wants/haves/depth, so a repository that gains
-// objects under the same tip is not seen; refs changing is part of the key via wants.
-let packCache = new Map<string, Buffer>();
-
-/** The pack for one upload plan, deflated once per identical plan. */
-function cachedPack(repo: Repo, key: string, objects: { type: ObjType; data: Buffer }[]): Buffer {
-  const hit = packCache.get(key);
-  if (hit !== undefined) return hit;
-  const pack = writePack(objects);
-  if (packCache.size > 64) packCache = new Map();
-  packCache.set(key, pack);
-  return pack;
-}
-
 // ---------------------------------------------------------------- pkt-line
 
 export function pktLine(data: string | Buffer): Buffer {
@@ -420,7 +404,7 @@ export function handleUploadPackV0(repo: Repo, body: Buffer): Buffer {
   for (const s of shallowLines) out.push(pktLine(s));
   for (const s of unshallowLines) out.push(pktLine(s));
   if (objects.length > 0) {
-    const pack = cachedPack(repo, `v0|${repo.owner}/${repo.name}|${wants.join(',')}|${haves.join(',')}|${depth ?? ''}`, objects);
+    const pack = writePack(objects);
     // side-band-64k framing: band 1 carries pack data
     for (let i = 0; i < pack.length; i += 65515) {
       out.push(pktLine(Buffer.concat([Buffer.from([1]), pack.subarray(i, i + 65515)])));
@@ -585,7 +569,7 @@ export function handleV2Fetch(repo: Repo, args: Map<string, string[]>): Buffer {
   // packfile section (sideband band 1 carries the pack bytes)
   out.push(pktLine('packfile\n'));
   if (objects.length > 0) {
-    const pack = cachedPack(repo, `v2|${repo.owner}/${repo.name}|${wants.join(',')}|${haves.join(',')}|${depth ?? ''}`, objects);
+    const pack = writePack(objects);
     for (let i = 0; i < pack.length; i += 65515) {
       out.push(pktLine(Buffer.concat([Buffer.from([1]), pack.subarray(i, i + 65515)])));
     }

@@ -360,8 +360,7 @@ export function writePack(objects: readonly { type: ObjType; data: Buffer }[]): 
     }
     header.push(byte);
     parts.push(Buffer.from(header));
-    // level 1 is the sweet spot: level 0 inflates the wire size the 200-push workload pays for.
-    parts.push(deflateSync(obj.data, { level: 1, memLevel: 8 }));
+    parts.push(deflateSync(obj.data, { level: 1 }));
   }
   const body = Buffer.concat(parts);
   const checksum = createHash('sha1').update(body).digest();
