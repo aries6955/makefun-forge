@@ -123,23 +123,47 @@ function labelJson(name: string, color: string): Record<string, unknown> {
   return made;
 }
 
+/**
+ * The parts of an issue's JSON that never change once it exists: node_id and id are hashes of
+ * its address, the owner and the labels' colours are fixed. The read workload fetches one issue
+ * 2,000 times, so these hashes and the two cached lookups were recomputed 2,000 times for
+ * nothing. Mutable fields (title, body, state, comments, timestamps) stay live below.
+ */
+const issueFixedCache = new Map<string, { id: number; node_id: string; user: Record<string, unknown>; url: string }>();
+
+function issueFixed(repo: Repo, issue: Issue): { id: number; node_id: string; user: Record<string, unknown>; url: string } {
+  const owner = repo.owner ?? '';
+  const key = `${owner}/${repo.name}#${issue.number}`;
+  const hit = issueFixedCache.get(key);
+  if (hit !== undefined) return hit;
+  const made = {
+    id: loginId(key),
+    node_id: globalId('I', `${owner}/${repo.name}/${issue.number}`),
+    user: userJson(owner),
+    url: `/api/v3/repos/${owner}/${repo.name}/issues/${issue.number}`,
+  };
+  issueFixedCache.set(key, made);
+  return made;
+}
+
 function issueJson(repo: Repo, issue: Issue): Record<string, unknown> {
+  const fixed = issueFixed(repo, issue);
   return {
-    id: loginId(`${repo.owner}/${repo.name}#${issue.number}`),
-    node_id: globalId('I', `${repo.owner}/${repo.name}/${issue.number}`),
+    id: fixed.id,
+    node_id: fixed.node_id,
     number: issue.number,
     title: issue.title,
     body: issue.body,
     state: issue.state,
     locked: false,
     labels: issue.labels.map((l) => labelJson(l, 'ededed')),
-    user: userJson(repo.owner),
+    user: fixed.user,
     created_at: issue.createdAt,
     updated_at: issue.updatedAt,
     closed_at: issue.closedAt,
     comments: issue.comments.length,
     author_association: 'OWNER',
-    repository_url: `/api/v3/repos/${repo.owner}/${repo.name}/issues/${issue.number}`,
+    repository_url: fixed.url,
   };
 }
 

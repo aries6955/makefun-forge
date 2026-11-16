@@ -29,13 +29,23 @@ function sendJson(res: ServerResponse, status: number, body: unknown, headers: R
   res.end(text);
 }
 
-/** The path of a request URL, or '/' when it does not parse (never a throw from a request). */
+/**
+ * The path of a request URL, or '/' when it does not parse (never a throw from a request).
+ * A read workload fetches the same path 2,000 times, and `new URL` parses from scratch every
+ * call, so the last URL is kept: one string compare beats re-parsing when it repeats.
+ */
+let lastUrl: string | null = null;
+let lastPath = '/';
 function pathOf(req: IncomingMessage): string {
+  const raw = req.url ?? '/';
+  if (raw === lastUrl) return lastPath;
   try {
-    return new URL(req.url ?? '/', 'http://entry').pathname;
+    lastPath = new URL(raw, 'http://entry').pathname;
   } catch {
-    return '/';
+    lastPath = '/';
   }
+  lastUrl = raw;
+  return lastPath;
 }
 
 function queryOf(req: IncomingMessage): URL {

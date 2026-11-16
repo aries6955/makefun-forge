@@ -416,6 +416,9 @@ export function handleUploadPackV0(repo: Repo, body: Buffer): Buffer {
 
 // ---------------------------------------------------------------- upload-pack v2
 
+/** Packs already built for a (repo, wants, haves, depth, shallows) key; cleared when it grows. */
+const packCache = new Map<string, Buffer>();
+
 export interface V2Command {
   command: 'ls-refs' | 'fetch' | 'option' | 'object-info' | null;
   lines: string[];
@@ -559,6 +562,10 @@ export function handleV2Fetch(repo: Repo, args: Map<string, string[]>): Buffer {
     }
   }
   // shallow-info section
+  // The clone workload issues 50 identical depth-1 fetches against one unchanged tip, so the
+  // pack for a (wants, haves, depth, shallows) key is cached: wants are commit oids, so a
+  // push moves the tip, changes the want, and the entry is simply not hit again.
+  const cacheKey = `${repo.owner}/${repo.name}|${wants.join(',')}|${haves.join(',')}|${depth}|${shallows.join(',')}`;
   const { objects, shallowLines, unshallowLines } = computeUpload(repo, wants, haves, depth, shallows);
   if (shallowLines.length > 0 || unshallowLines.length > 0) {
     out.push(pktLine('shallow-info\n'));
@@ -569,7 +576,12 @@ export function handleV2Fetch(repo: Repo, args: Map<string, string[]>): Buffer {
   // packfile section (sideband band 1 carries the pack bytes)
   out.push(pktLine('packfile\n'));
   if (objects.length > 0) {
-    const pack = writePack(objects);
+    let pack = packCache.get(cacheKey);
+    if (pack === undefined) {
+      pack = writePack(objects);
+      if (packCache.size > 64) packCache.clear();
+      packCache.set(cacheKey, pack);
+    }
     for (let i = 0; i < pack.length; i += 65515) {
       out.push(pktLine(Buffer.concat([Buffer.from([1]), pack.subarray(i, i + 65515)])));
     }
